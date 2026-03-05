@@ -1,56 +1,56 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=JetBrains+Mono:wght@400;500;600;700&family=Sora:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 @import "tailwindcss";
 
 /* ============================================================
    ATLAS — Design System CSS Variables
-   CRED cleanliness + Claude AI palette
+   Claude AI aesthetic palette
    ============================================================ */
 
 :root {
-  /* Dark Mode (default) */
-  --bg-primary: #0d0d0d;
-  --bg-secondary: #1a1a1a;
-  --bg-card: #1e1e2e;
-  --bg-elevated: #252535;
-  --accent-primary: #cc785c;
-  --accent-secondary: #d4956a;
-  --accent-purple: #6b5dd3;
-  --accent-purple-light: #8b7cf8;
-  --text-primary: #ececf1;
-  --text-secondary: #8e8ea0;
-  --text-muted: #565869;
-  --border-subtle: #2d2d3d;
-  --border-default: #3d3d4e;
+  /* Dark Mode (default for Claude's dark theme) */
+  --bg-primary: #272725;
+  --bg-secondary: #302d2c;
+  --bg-card: #272725;
+  --bg-elevated: #3a3836;
+  --accent-primary: #da7756;
+  --accent-secondary: #d97757;
+  --accent-purple: #9c9a92;
+  --accent-purple-light: #b3b1a8;
+  --text-primary: #e0dcd1;
+  --text-secondary: #9c9a92;
+  --text-muted: #73716a;
+  --border-subtle: #403e3a;
+  --border-default: #55534e;
   --success: #10b981;
   --warning: #f59e0b;
   --error: #ef4444;
-  --gradient-hero: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  --gradient-hero: linear-gradient(135deg, #302d2c 0%, #272725 100%);
 
   /* Font families */
-  --font-display: 'Sora', sans-serif;
-  --font-body: 'DM Sans', sans-serif;
+  --font-display: 'Inter', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
 }
 
 [data-theme='light'] {
-  --bg-primary: #fafafa;
-  --bg-secondary: #f4f4f5;
+  --bg-primary: #ffffff;
+  --bg-secondary: #f3f1e8;
   --bg-card: #ffffff;
-  --bg-elevated: #f0f0f5;
-  --accent-primary: #cc785c;
-  --accent-secondary: #d4956a;
-  --accent-purple: #6b5dd3;
-  --accent-purple-light: #7c6ee0;
-  --text-primary: #0d0d0d;
-  --text-secondary: #52525b;
-  --text-muted: #a1a1aa;
-  --border-subtle: #e4e4e7;
-  --border-default: #d4d4d8;
+  --bg-elevated: #f3f1e8;
+  --accent-primary: #da7756;
+  --accent-secondary: #d97757;
+  --accent-purple: #696c70;
+  --accent-purple-light: #8e9094;
+  --text-primary: #1e1e19;
+  --text-secondary: #696a60;
+  --text-muted: #8e8d88;
+  --border-subtle: #e6e4d9;
+  --border-default: #d4d3c9;
   --success: #10b981;
   --warning: #f59e0b;
   --error: #ef4444;
-  --gradient-hero: linear-gradient(135deg, #f8f9ff 0%, #eef1ff 50%, #e0e7ff 100%);
+  --gradient-hero: linear-gradient(135deg, #f3f1e8 0%, #ffffff 100%);
 }
 
 /* ─── Base Styles ───────────────────────────────────────── */
