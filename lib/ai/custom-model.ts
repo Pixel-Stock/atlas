@@ -1,154 +1,281 @@
-import { logger } from '@/lib/utils/logger';
-import type { MLModelResult, ScanLineItem } from '@/types';
-
-/* ============================================================
-   ATLAS — Custom ML Model Wrapper (TensorFlow.js)
-   Real architecture, wired into pipeline.
-   Returns confidence 0 when model weights are unavailable
-   (falls back to Gemini in the pipeline).
-   ============================================================ */
-
 /**
- * ATLAS Receipt Model — TensorFlow.js based OCR.
+ * ATLAS Custom ML Model — TypeScript Integration
+ * ================================================
+ * Drop this file at: lib/ai/custom-model.ts
  *
- * Architecture: Pretrained MobileNetV2 backbone → custom head for
- * text region detection → Tesseract.js post-processing for OCR.
+ * This module is the custom ML model side of the dual-model pipeline.
+ * It calls the Python ONNX inference server (server.py) and returns
+ * a result in the same shape as the Gemini module so pipeline.ts
+ * can compare confidence scores and pick the winner.
  *
- * For MVP: Model weights file at /public/models/atlas-receipt-v1/model.json
- * does not exist yet. The model returns confidence 0 in this case,
- * causing the pipeline to use Gemini's result instead.
- *
- * This is NOT a placeholder — the architecture and interface are real.
- * When model weights are available, inference runs automatically.
+ * In browser contexts (future TF.js support), it falls back gracefully.
  */
-export class ATLASReceiptModel {
-    private modelLoaded: boolean = false;
-    private modelVersion: string = 'v1.0.0-stub';
 
-    async load(): Promise<void> {
-        try {
-            // Attempt to load model weights dynamically.
-            // In production, tf would be imported and model loaded from
-            // /public/models/atlas-receipt-v1/model.json
-            //
-            // const tf = await import('@tensorflow/tfjs-node');
-            // this.model = await tf.loadLayersModel(
-            //   'file://./public/models/atlas-receipt-v1/model.json'
-            // );
-            // this.modelLoaded = true;
-            // this.modelVersion = 'v1.0.0';
+import { ATLASReceiptResult, LineItem, ModelSource } from "@/types";
 
-            // For MVP: Check if model file exists
-            // If TensorFlow.js and model weights are available, this would load them
-            this.modelLoaded = false;
-            logger.info(
-                'CustomML',
-                'Model weights not available — will fall back to Gemini via confidence scoring'
-            );
-        } catch (error) {
-            this.modelLoaded = false;
-            logger.warn('CustomML', 'Failed to load model', error);
-        }
-    }
+// ─────────────────────────────────────────────
+// TYPES
+// ─────────────────────────────────────────────
 
-    /**
-     * Run inference on a receipt image.
-     * Returns confidence 0 when model is not loaded, ensuring
-     * the pipeline falls back to Gemini.
-     */
-    async predict(imageBuffer: Buffer): Promise<MLModelResult> {
-        if (!this.modelLoaded) {
-            return {
-                merchant_name: '',
-                line_items: [],
-                overall_confidence: 0,
-                model_version: this.modelVersion + '-unavailable',
-            };
-        }
-
-        // When model is loaded, real inference would happen here:
-        // 1. Preprocess image (resize to 224x224, normalize)
-        // 2. Run through MobileNetV2 backbone
-        // 3. Extract text regions
-        // 4. Run OCR on each region
-        // 5. Parse structured data from OCR output
-        // 6. Categorize items using the classification head
-
-        logger.info('CustomML', 'Running inference', {
-            imageSize: imageBuffer.length,
-            modelVersion: this.modelVersion,
-        });
-
-        // Placeholder inference result
-        const result: MLModelResult = {
-            merchant_name: '',
-            line_items: [],
-            overall_confidence: 0,
-            model_version: this.modelVersion,
-        };
-
-        return result;
-    }
-
-    /**
-     * Get model status information.
-     */
-    getStatus(): {
-        loaded: boolean;
-        version: string;
-    } {
-        return {
-            loaded: this.modelLoaded,
-            version: this.modelVersion,
-        };
-    }
+interface MLServerPrediction {
+  predicted_class: string;
+  class_index: number;
+  confidence: number;
+  confidence_tier: "high" | "medium" | "low";
+  all_probabilities: Record<string, number>;
+  model_version: string;
+  inference_time_ms: number;
+  action: "auto_accept" | "confirm" | "retake";
 }
 
-// Singleton instance
-let modelInstance: ATLASReceiptModel | null = null;
+interface MLModelConfig {
+  serverUrl: string;
+  timeoutMs: number;
+  modelVersion: string;
+}
+
+// ─────────────────────────────────────────────
+// CONFIG
+// ─────────────────────────────────────────────
+
+const ML_CONFIG: MLModelConfig = {
+  serverUrl:    process.env.ATLAS_ML_SERVER_URL ?? "http://localhost:8001",
+  timeoutMs:    8000,   // 8s timeout — if ML server is slow, Gemini wins by default
+  modelVersion: "1.0.0",
+};
+
+// ─────────────────────────────────────────────
+// HEALTH CHECK
+// ─────────────────────────────────────────────
+
+let _serverHealthy: boolean | null = null;
+let _lastHealthCheck = 0;
+const HEALTH_CHECK_TTL_MS = 30_000; // recheck every 30s
+
+async function isServerHealthy(): Promise<boolean> {
+  const now = Date.now();
+  if (_serverHealthy !== null && now - _lastHealthCheck < HEALTH_CHECK_TTL_MS) {
+    return _serverHealthy;
+  }
+
+  try {
+    const response = await fetch(`${ML_CONFIG.serverUrl}/health`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    const data = await response.json();
+    _serverHealthy = data.status === "ok" && data.model_loaded === true;
+  } catch {
+    _serverHealthy = false;
+  }
+
+  _lastHealthCheck = now;
+  return _serverHealthy!;
+}
+
+// ─────────────────────────────────────────────
+// CORE PREDICTION
+// ─────────────────────────────────────────────
 
 /**
- * Get the singleton model instance, loading it if necessary.
+ * Sends image to the Python ONNX inference server.
+ * Returns null if server is unavailable (Gemini takes over).
  */
-export async function getATLASModel(): Promise<ATLASReceiptModel> {
-    if (!modelInstance) {
-        modelInstance = new ATLASReceiptModel();
-        await modelInstance.load();
+async function callMLServer(
+  imageBlob: Blob,
+): Promise<MLServerPrediction | null> {
+  const healthy = await isServerHealthy();
+  if (!healthy) {
+    if (process.env.NODE_ENV === "development") {
+      console.warn("[ATLAS/ML] Server unavailable — Gemini will be used");
     }
-    return modelInstance;
+    return null;
+  }
+
+  const formData = new FormData();
+  formData.append("file", imageBlob, "receipt.jpg");
+
+  try {
+    const controller = new AbortController();
+    const timeout    = setTimeout(() => controller.abort(), ML_CONFIG.timeoutMs);
+
+    const response = await fetch(`${ML_CONFIG.serverUrl}/predict`, {
+      method: "POST",
+      body:   formData,
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`ML server returned ${response.status}: ${err}`);
+    }
+
+    return (await response.json()) as MLServerPrediction;
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      console.error(`[ATLAS/ML] Timeout after ${ML_CONFIG.timeoutMs}ms`);
+    } else {
+      console.error("[ATLAS/ML] Prediction error:", error);
+    }
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────
+// RESULT MAPPER
+// ─────────────────────────────────────────────
+
+/**
+ * Maps ML server output → ATLASReceiptResult shape.
+ * This is intentionally lightweight — the ML model is a receipt detector/classifier,
+ * not a text extractor. Line items are extracted by Gemini.
+ * The ML model's job is to:
+ *   1. Validate: is this actually a receipt?
+ *   2. Classify: what type?
+ *   3. Quality check: is image good enough for OCR?
+ */
+function mapMLResultToAtlasFormat(
+  prediction: MLServerPrediction,
+): Partial<ATLASReceiptResult> {
+  // Derive category hint from predicted class name
+  const classLower = prediction.predicted_class.toLowerCase();
+
+  const categoryMap: Record<string, string> = {
+    grocery:      "Groceries",
+    food:         "Food & Dining",
+    restaurant:   "Food & Dining",
+    medical:      "Health & Medicine",
+    pharmacy:     "Health & Medicine",
+    health:       "Health & Medicine",
+    electronics:  "Electronics",
+    clothing:     "Clothing & Fashion",
+    fashion:      "Clothing & Fashion",
+    transport:    "Transport",
+    fuel:         "Transport",
+    home:         "Home & Household",
+    utility:      "Home & Household",
+    entertainment:"Entertainment",
+    education:    "Education",
+    takeout:      "Takeout & Delivery",
+    delivery:     "Takeout & Delivery",
+  };
+
+  let categoryHint: string | undefined;
+  for (const [key, category] of Object.entries(categoryMap)) {
+    if (classLower.includes(key)) {
+      categoryHint = category;
+      break;
+    }
+  }
+
+  return {
+    overall_confidence: prediction.confidence,
+    ml_classification:  prediction.predicted_class,
+    category_hint:      categoryHint,
+    ml_action:          prediction.action,
+    ml_inference_ms:    prediction.inference_time_ms,
+    model_version:      prediction.model_version,
+  };
+}
+
+// ─────────────────────────────────────────────
+// PUBLIC API
+// ─────────────────────────────────────────────
+
+export interface CustomMLResult {
+  /** Overall confidence score 0.0–1.0. 0 means model unavailable. */
+  confidence:        number;
+  /** Predicted receipt class (e.g. "grocery", "restaurant") */
+  predicted_class:   string;
+  /** Confidence tier: high | medium | low */
+  confidence_tier:   "high" | "medium" | "low";
+  /** Category hint for downstream categorization */
+  category_hint:     string | undefined;
+  /** What ATLAS should do with this result */
+  action:            "auto_accept" | "confirm" | "retake";
+  /** Inference time in ms */
+  inference_time_ms: number;
+  /** Whether the ML server was available */
+  server_available:  boolean;
+  /** Model version */
+  model_version:     string;
 }
 
 /**
- * Preprocess image data for the ML model.
- * Resizes and normalizes pixel values.
+ * Main entry point called by pipeline.ts
+ *
+ * @param imageBlob - The receipt image as a Blob
+ * @returns CustomMLResult — confidence 0 if server unavailable (Gemini wins)
  */
-export function preprocessImage(
-    _imageBuffer: Buffer
-): { tensor: Float32Array; width: number; height: number } {
-    // When TensorFlow.js is integrated:
-    // 1. Decode image buffer to pixel data
-    // 2. Resize to 224x224 (MobileNetV2 input size)
-    // 3. Normalize pixel values to [-1, 1]
-    // 4. Return as Float32Array tensor
+export async function runCustomMLModel(
+  imageBlob: Blob,
+): Promise<CustomMLResult> {
+  const prediction = await callMLServer(imageBlob);
 
+  // Server unavailable → return 0 confidence so Gemini wins
+  if (!prediction) {
     return {
-        tensor: new Float32Array(224 * 224 * 3),
-        width: 224,
-        height: 224,
+      confidence:        0,
+      predicted_class:   "unknown",
+      confidence_tier:   "low",
+      category_hint:     undefined,
+      action:            "retake",
+      inference_time_ms: 0,
+      server_available:  false,
+      model_version:     ML_CONFIG.modelVersion,
     };
+  }
+
+  const mapped = mapMLResultToAtlasFormat(prediction);
+
+  return {
+    confidence:        prediction.confidence,
+    predicted_class:   prediction.predicted_class,
+    confidence_tier:   prediction.confidence_tier,
+    category_hint:     mapped.category_hint,
+    action:            prediction.action,
+    inference_time_ms: prediction.inference_time_ms,
+    server_available:  true,
+    model_version:     prediction.model_version,
+  };
 }
 
 /**
- * Post-process model output into structured line items.
+ * Check if ML server is reachable.
+ * Call this on app startup to show server status in admin panel.
  */
-export function postprocessOutput(
-    _rawOutput: Float32Array,
-    _ocrText: string
-): ScanLineItem[] {
-    // When model is active:
-    // 1. Parse detected text regions from model output
-    // 2. Match regions to line items
-    // 3. Extract amounts using regex patterns
-    // 4. Categorize using classification head output
-    return [];
+export async function getMLServerStatus(): Promise<{
+  healthy:       boolean;
+  version:       string;
+  model_loaded:  boolean;
+}> {
+  try {
+    const response = await fetch(`${ML_CONFIG.serverUrl}/health`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    const data = await response.json();
+    return {
+      healthy:      data.status === "ok",
+      version:      data.model_version ?? "unknown",
+      model_loaded: data.model_loaded ?? false,
+    };
+  } catch {
+    return { healthy: false, version: "unreachable", model_loaded: false };
+  }
+}
+
+/**
+ * Get class labels from ML server.
+ * Used in admin panel to display model info.
+ */
+export async function getMLModelClasses(): Promise<Record<string, string>> {
+  try {
+    const response = await fetch(`${ML_CONFIG.serverUrl}/classes`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    return await response.json();
+  } catch {
+    return {};
+  }
 }

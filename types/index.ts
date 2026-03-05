@@ -52,14 +52,94 @@ export interface Category {
 export interface MerchantFingerprint {
     id: string;
     merchant_key: string;
+    display_name: string | null;
+    city: string | null;
+    country: string;
     category_votes: Record<string, number>;
     dominant_category: string | null;
     confidence_score: number;
     total_votes: number;
     is_resolved: boolean;
+    resolved_at: string | null;
+    recent_votes: Record<string, unknown>[];
+    drift_detected: boolean;
+    drift_detected_at: string | null;
+    last_drift_check: string | null;
     seeded_from_places_api: boolean;
+    places_api_types: string[];
+    places_place_id: string | null;
+    category_distribution: Record<string, number>;
+    is_multi_category: boolean;
     created_at: string;
     updated_at: string;
+}
+
+export interface CrowdTagVote {
+    id: string;
+    merchant_key: string;
+    user_id: string;
+    category: string;
+    confidence: number;
+    trust_weight: number;
+    weighted_vote: number;
+    is_manual: boolean;
+    receipt_id: string | null;
+    created_at: string;
+}
+
+export interface UserTrustScoreRecord {
+    user_id: string;
+    trust_score: number;
+    total_scans: number;
+    correct_votes: number;
+    incorrect_votes: number;
+    accuracy_rate: number;
+    tier: 'new' | 'experienced' | 'validated' | 'expert';
+    last_updated: string;
+}
+
+export interface CrowdTagEventRecord {
+    id: string;
+    event_type: 'merchant_resolved' | 'drift_detected' | 'merchant_seeded' | 'vote_logged';
+    merchant_key: string;
+    payload: Record<string, unknown>;
+    created_at: string;
+}
+
+// ─── AI Pipeline Types (Phase 2) ──────────────────────────
+
+export type ModelSource = 'gemini' | 'custom_ml';
+
+export interface ATLASReceiptResult {
+    merchant_name: string;
+    receipt_date: string | null;
+    total_amount: number;
+    currency: string;
+    items: GeminiLineItem[];
+    subtotal: number | null;
+    tax: number | null;
+    discount: number | null;
+    overall_confidence: number;
+    model_used: ModelSource;
+    gemini_confidence: number;
+    ml_confidence: number;
+    ml_server_available: boolean;
+    confidence_tier: 'high' | 'medium' | 'low';
+    processing_time_ms: number;
+    is_torn_receipt: boolean;
+    notes?: string;
+    // ML model fields
+    ml_classification?: string;
+    category_hint?: string;
+    ml_action?: string;
+    ml_inference_ms?: number;
+    model_version?: string;
+    // CrowdTag Phase 2 fields
+    crowdtag_hit?: boolean;
+    crowdtag_category?: string;
+    crowdtag_confidence?: number;
+    crowdtag_is_multi_category?: boolean;
+    crowdtag_distribution?: Record<string, number>;
 }
 
 // ─── API Request/Response Types ────────────────────────────
